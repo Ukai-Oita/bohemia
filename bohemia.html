@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bohemia RPG</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #2b2b2b; }
+    canvas { display: block; margin: 0 auto; background: #88c070; }
+    #intro {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 10;
+    }
+    #intro button {
+      padding: 10px 20px;
+      font-size: 18px;
+      margin-top: 20px;
+    }
+    #scoreScreen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.9);
+      color: white;
+      font-family: sans-serif;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 20;
+    }
+    #scoreScreen button {
+      padding: 10px 20px;
+      font-size: 18px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+<div id="intro">
+  <h1>Welcome to Bohemia</h1>
+  <p>You are a traveler collecting coins in a dangerous land.</p>
+  <p>Avoid or fight bandits, and collect health potions to survive.</p>
+  <p>Controls: Arrow keys to move, Space to attack.</p>
+  <button onclick="startGame()">Start Game</button>
+</div>
+<div id="scoreScreen">
+  <h1>Game Over</h1>
+  <p id="finalScore"></p>
+  <button onclick="restartGame()">Play Again</button>
+</div>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = 800;
+canvas.height = 600;
+
+const player = {
+  x: 100,
+  y: 100,
+  size: 20,
+  color: 'blue',
+  speed: 3,
+  hp: 5,
+  score: 0,
+  attackDir: null
+};
+
+const keys = {};
+let trees = [];
+let items = [];
+let potions = [];
+let water = [];
+let bandits = [];
+let level = 1;
+let swords = [];
+let gameRunning = false;
+
+function intersects(a, b) {
+  return a.x < b.x + b.size && a.x + a.size > b.x && a.y < b.y + b.size && a.y + a.size > b.y;
+}
+
+function isFree(obj, list) {
+  return !list.some(item => intersects(obj, item));
+}
+
+function placeObject(size, others) {
+  let obj;
+  let tries = 0;
+  do {
+    obj = { x: Math.random() * (canvas.width - size), y: Math.random() * (canvas.height - size), size };
+    tries++;
+  } while (!isFree(obj, others) && tries < 100);
+  return obj;
+}
+
+function randomObjects() {
+  trees = [];
+  items = [];
+  bandits = [];
+  potions = [];
+  water = [];
+
+  for (let i = 0; i < 10; i++) {
+    trees.push(placeObject(30, trees));
+  }
+
+  for (let i = 0; i < 3; i++) {
+    water.push(placeObject(50, trees.concat(water)));
+  }
+
+  for (let i = 0; i < 5; i++) {
+    items.push({ ...placeObject(15, trees.concat(items, water)), collected: false });
+  }
+
+  for (let i = 0; i < 3; i++) {
+    potions.push({ ...placeObject(15, trees.concat(items, potions, water)), used: false });
+  }
+
+  for (let i = 0; i < level; i++) {
+    bandits.push({ ...placeObject(20, trees.concat(items, bandits, potions, water)), speed: 1 + level * 0.2, attackCooldown: 0 });
+  }
+}
+
+function drawSquare(obj, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(obj.x, obj.y, obj.size, obj.size);
+}
+
+function movePlayer() {
+  let newX = player.x;
+  let newY = player.y;
+  if (keys['ArrowUp']) { newY -= player.speed; player.attackDir = 'up'; }
+  if (keys['ArrowDown']) { newY += player.speed; player.attackDir = 'down'; }
+  if (keys['ArrowLeft']) { newX -= player.speed; player.attackDir = 'left'; }
+  if (keys['ArrowRight']) { newX += player.speed; player.attackDir = 'right'; }
+
+  const future = { x: newX, y: newY, size: player.size };
+  if (!trees.some(tree => intersects(future, tree))) {
+    if (newX >= 0 && newX + player.size <= canvas.width) player.x = newX;
+    if (newY >= 0 && newY + player.size <= canvas.height) player.y = newY;
+  }
+
+  if (water.some(w => intersects(player, w))) player.speed = 1.2;
+  else player.speed = 3;
+}
+
+function attack(origin, dir, color, targets, damageCallback) {
+  const swordLength = 20;
+  const swordThickness = 5;
+  let sword;
+  if (dir === 'up') sword = { x: origin.x + origin.size/2 - swordThickness/2, y: origin.y - swordLength, w: swordThickness, h: swordLength };
+  if (dir === 'down') sword = { x: origin.x + origin.size/2 - swordThickness/2, y: origin.y + origin.size, w: swordThickness, h: swordLength };
+  if (dir === 'left') sword = { x: origin.x - swordLength, y: origin.y + origin.size/2 - swordThickness/2, w: swordLength, h: swordThickness };
+  if (dir === 'right') sword = { x: origin.x + origin.size, y: origin.y + origin.size/2 - swordThickness/2, w: swordLength, h: swordThickness };
+  swords.push({ ...sword, color, duration: 10, targets, damageCallback });
+}
+
+function updateSwords() {
+  for (let s of swords) {
+    ctx.fillStyle = s.color;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    for (let t of s.targets) {
+      if (intersects({ x: s.x, y: s.y, size: Math.max(s.w, s.h) }, t)) s.damageCallback(t);
+    }
+    s.duration--;
+  }
+  swords = swords.filter(s => s.duration > 0);
+}
+
+function updateBandits() {
+  for (let b of bandits) {
+    const dx = player.x - b.x;
+    const dy = player.y - b.y;
+    const dist = Math.hypot(dx, dy);
+    const moveX = (dx / dist) * b.speed;
+    const moveY = (dy / dist) * b.speed;
+    const future = { x: b.x + moveX, y: b.y + moveY, size: b.size };
+    if (!trees.some(tree => intersects(future, tree)) && !water.some(w => intersects(future, w))) {
+      if (future.x >= 0 && future.x + b.size <= canvas.width) b.x += moveX;
+      if (future.y >= 0 && future.y + b.size <= canvas.height) b.y += moveY;
+    }
+    if (dist < 30 && b.attackCooldown <= 0) {
+      const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+      attack(b, dir, 'orange', [player], () => player.hp--);
+      b.attackCooldown = 60;
+    } else {
+      b.attackCooldown--;
+    }
+  }
+}
+
+function drawUI() {
+  ctx.fillStyle = 'white';
+  ctx.font = '16px sans-serif';
+  ctx.fillText(`HP: ${player.hp}`, 10, 20);
+  ctx.fillText(`Score: ${player.score}`, 10, 40);
+  ctx.fillText(`Level: ${level}`, 10, 60);
+}
+
+function checkItems() {
+  let allCollected = true;
+  for (let item of items) {
+    if (!item.collected && intersects(player, item)) {
+      item.collected = true;
+      player.score += 10;
+    }
+    if (!item.collected) allCollected = false;
+  }
+  for (let p of potions) {
+    if (!p.used && intersects(player, p)) {
+      p.used = true;
+      player.hp++;
+    }
+  }
+  if (allCollected) {
+    level++;
+    randomObjects();
+    player.x = 100;
+    player.y = 100;
+  }
+}
+
+function update() {
+  if (!gameRunning) return;
+
+  if (player.hp <= 0) {
+    gameRunning = false;
+    document.getElementById('finalScore').innerText = `Final Score: ${player.score}`;
+    document.getElementById('scoreScreen').style.display = 'flex';
+    return;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  movePlayer();
+  updateBandits();
+  updateSwords();
+  checkItems();
+
+  for (let tree of trees) drawSquare(tree, 'green');
+  for (let w of water) drawSquare(w, '#4aa');
+  drawSquare(player, player.color);
+  for (let item of items) if (!item.collected) drawSquare(item, 'yellow');
+  for (let p of potions) if (!p.used) drawSquare(p, 'purple');
+  for (let b of bandits) drawSquare(b, 'red');
+
+  drawUI();
+  requestAnimationFrame(update);
+}
+
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ') {
+    if (player.attackDir) {
+      attack(player, player.attackDir, 'white', bandits, b => bandits.splice(bandits.indexOf(b), 1));
+    }
+  }
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+function startGame() {
+  document.getElementById('intro').style.display = 'none';
+  document.getElementById('scoreScreen').style.display = 'none';
+  gameRunning = true;
+  player.hp = 5;
+  player.score = 0;
+  player.x = 100;
+  player.y = 100;
+  level = 1;
+  randomObjects();
+  update();
+}
+
+function restartGame() {
+  startGame();
+}
+</script>
+</body>
+</html>
